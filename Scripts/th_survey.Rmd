@@ -1,0 +1,843 @@
+---
+title: "Analytical pipeline for 'Conservation impacts and socio-demographic characteristics mediate perceptions of trophy hunting'"
+author: "Johnson T.F."
+date: "2025-05-09"
+output: html_document
+---
+
+##Load packages
+
+```{r load_packages_functions, error = F, message = F, warning = F}
+library(tidyverse)
+library(raster)
+library(rstan)
+library(RColorBrewer)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+library(ggplot2)
+library(ggpubr)
+library(gtools)
+library(bayesplot)
+
+lunique = function(x) length(unique(x))
+factnum =  function(x) as.numeric(as.factor(x))
+
+```
+
+##Load data and manipulate
+
+```{r load_data, error = F, message = F, warning = F}
+# data
+qlong = read.csv("../Data/TrophyHuntingSurveyData.csv")[,-1]
+
+#Number of respondents
+length(unique(qlong$Response.ID))
+
+#Number of countries
+unique(qlong$What.country.have.you.spent.the.most.time.living.in.)
+print("Countries include: Sweden, UK, Denmark, Australia, France, Netherlands, USA, Taiwan, Canada, India, South Africa, Rhodesia, Italy, Brazil, Germany, Lithuania, Indonesia, Poland, China, Finland, Ireland, Tanzania, Belgium, Iran, Kenya, Czechia, Portugal, Israel, Switzerland")
+print("29 countries")
+
+# split by never or sometimes acceptable - 0 is sometimes acceptable
+qlong=qlong %>% mutate(responseid = as.numeric(as.factor(Response.ID)))
+
+scoretab = qlong %>% mutate(responseid = as.numeric(as.factor(Response.ID))) %>%
+  group_by(responseid)%>%
+  summarise(range=max(accepscore) - min(accepscore),score=mean(accepscore)) 
+
+#histogram of scores
+scoretab %>% ggplot(aes(score)) +
+  geom_histogram() +
+  theme_classic()
+
+# 1/3 write 0 for everything - a handful of fixed scores 
+filter(scoretab,range==0) %>% ggplot(aes(score)) +
+  geom_histogram() +
+  theme_classic()
+
+# fixed at zero are rejectors
+qlong=left_join(qlong,scoretab,by="responseid") %>% 
+  mutate(clus = ifelse(range==0 & score==0,1,0))
+
+# change some qlong names which are unwieldy
+names(qlong)[c(20,31,32,33,34,35,36,37)] = c("duration","age","gender","education.level","country.mosttime","diet","would.hunt","expertise")
+
+# get distinct rows for people
+dqlong=qlong %>% distinct(responseid,.keep_all = T) 
+
+# get complete.cases
+dqlong = dqlong[,c("age","gender","education.level","diet","expertise","clus","duration")] 
+dqlong = dqlong[complete.cases(dqlong),]
+```
+
+##Visualise sample
+
+```{r visualise_sample, fig.height=10, fig.width = 10, error = F, message = F, warning = F}
+cols =brewer.pal(8, "Set2")
+world = ne_coastline(scale = "medium", returnclass = "sf")
+world_countries = ne_countries(scale = "medium", returnclass = "sf")
+# Fixing polygons crossing dateline
+world = st_wrap_dateline(world)
+world_countries = st_wrap_dateline(world_countries)
+xmin = st_bbox(world)[["xmin"]]; xmax <- st_bbox(world)[["xmax"]]
+ymin = st_bbox(world)[["ymin"]]; ymax <- st_bbox(world)[["ymax"]]
+bb = sf::st_union(sf::st_make_grid(st_bbox(c(xmin = xmin,
+                                             xmax = xmax,
+                                             ymax = ymax,
+                                             ymin = ymin),
+                                           crs = st_crs(4326)),
+                                   n = 100))
+equator = st_linestring(matrix(c(-180, 0, 180, 0), ncol = 2, byrow = TRUE))
+equator = st_sfc(equator, crs = st_crs(world))
+eckertIV =
+  "+proj=eck4 +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+
+qlonglat = filter(qlong,!is.na(Location.Longitude))
+qlonglat = sf::st_as_sf(qlonglat, 
+                        coords = c("Location.Longitude", "Location.Latitude"),
+                        crs = 4269) 
+text_sizea = 9
+
+# Map
+Fig1a = ggplot(world) +
+  geom_sf(data = bb, fill = "grey80") +
+  geom_sf(data = equator, color = "gray20", linetype = "dashed",
+          linewidth = 0.1)+
+  geom_sf(data = world_countries, fill = "grey95", color = NA) +
+  geom_sf(color = "gray50", linewidth = 0.1)+
+  labs(title = "") +
+  geom_sf(data = qlonglat,
+          aes(geometry = geometry),
+          size = 0.7,
+          color = "black",
+          alpha=0.1)+
+  coord_sf(crs = eckertIV) +
+  theme_void()
+
+# Scores
+Fig1b = scoretab %>% ggplot(aes(score))+
+  geom_histogram(aes(y=..density..),binwidth = 1, position = "identity",alpha=0.5,color="black",fill=cols[1])+
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea))+
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  xlab("Acceptability")+
+  ylab("Density")
+
+
+# Age
+# basic stats
+mean(dqlong$age)
+sd(dqlong$age)
+range(dqlong$age)
+
+Fig1c = dqlong %>% ggplot(aes(age))+
+  geom_histogram(aes(y=..density..),binwidth = 1, position = "identity",alpha=0.5,color="black",fill=cols[1])+
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea))+
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  xlab("Age")+
+  ylab("")
+
+# Gender
+Fig1d = dqlong %>% 
+  mutate(gender = recode(gender, "Non-binary / third gender" = "Non-binary")) %>%
+  ggplot(aes(gender)) +
+  geom_bar() +
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea),
+        plot.title = element_text(size = text_sizea))+
+  scale_x_discrete(guide = guide_axis(n.dodge=2)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(x = "", y = "Count", title = "Gender")
+
+
+# Education
+levels(as.factor(dqlong$education.level))
+# reorder 
+dqlong$education.level = factor(dqlong$education.level, levels=c("Prefer not to say","High school/College or below","Bachelors degree","Masters degree","Doctoral degree"))
+
+Fig1e = dqlong %>% 
+  mutate(education.level = recode_factor(education.level, "High school/College or below" = "High school or below", "Bachelors degree" = "Bachelors", "Masters degree" = "Masters", "Doctoral degree" = "Doctoral", .ordered = T)) %>%
+  ggplot(aes(education.level)) +
+  geom_bar() +
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea),
+        plot.title = element_text(size = text_sizea))+
+  scale_x_discrete(guide = guide_axis(n.dodge=2)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(x = "", y = "", title = "Education")
+
+# Diet
+dqlong$diet = factor(dqlong$diet, levels=c("Vegan (No meat, fish, or dairy)","Vegetarian (No meat or fish)","Pescatarian (No meat)","Omnivore (Meat, fish, dairy, fruit and vegetables)","Carnivore (Primarily meat)"))
+
+Fig1f = dqlong %>% 
+  mutate(diet = recode_factor(diet, "Vegan (No meat, fish, or dairy)" = "Vegan", "Vegetarian (No meat or fish)" = "Vegetarian", "Pescatarian (No meat)" = "Pescatarian", "Omnivore (Meat, fish, dairy, fruit and vegetables)" = "Omnivore", "Carnivore (Primarily meat)" = "Carnivore", .ordered = T)) %>%
+  ggplot(aes(diet)) +
+  geom_bar() +
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea),
+        plot.title = element_text(size = text_sizea))+
+  scale_x_discrete(guide = guide_axis(n.dodge=2)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(x = "", y = "Count", title = "Diet")
+
+# Expertise
+Fig1g = dqlong %>% 
+  ggplot(aes(expertise)) +
+  geom_bar() +
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea),
+        plot.title = element_text(size = text_sizea))+
+  scale_x_discrete() +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(x = "", y = "", title = "Expertise")
+
+# arrange
+Fig1=ggarrange(Fig1a,
+          ggarrange(Fig1b, Fig1c, Fig1d, Fig1e, Fig1f, Fig1g, ncol = 2, nrow = 3, labels = c("B", "C", "D", "E", "F", "G"), font.label = list(size = 10)), nrow = 2, heights = c(1, 1.2), labels = c("A", ""), font.label = list(size = 10))
+Fig1
+ggsave("../Figures/Fig1.png",Fig1,dpi=300,width=10,height=10)
+
+```
+
+
+##Model 1:  Rejectors vs Discriminators
+
+```{r model_1_construct, error = F, message = F, warning = F}
+
+#7 people do not identify as male or female
+knitr::kable(as.data.frame(table(qlong$gender)), format="markdown")
+
+#4 people do not wish to list their education level
+knitr::kable(as.data.frame(table(qlong$education.level)), format="markdown")
+
+dqlong_clipped=filter(dqlong,gender %in% c("Male","Female")) %>% filter(!education.level == "Prefer not to say" )
+
+#numer of respondents in the final sample
+nrow(dqlong_clipped)
+
+#numbers of people that answered 0 every time (1) or not (0)
+table(dqlong_clipped$clus)
+
+
+
+# prior on simplex
+draws = rdirichlet(100,rep(2,5)) #  2 as suggest by mcrealth looks reasonable for the simplex
+plot(NULL,xlim=c(1,5),ylim=c(0,0.7))
+for(i in 1:100) lines(1:5,draws[i,])
+
+# using an intercept with an baseline intercept of female,highschool,vegan,no expertise
+datalistop = list(
+  y = dqlong_clipped$clus,
+  
+  age = dqlong_clipped$age, # keep continuous
+  gender = factnum(dqlong_clipped$gender)-1, # 0 female, 1 male
+  
+  education = factnum(droplevels(dqlong_clipped$education.level)), # (1 high school, 5 doctorate)  
+  diet = factnum(dqlong_clipped$diet), # (1 vegan  - 5 carnivore)
+  expertise = factnum(dqlong_clipped$expertise), # (1 no -  3 year)
+  
+  # order pred alphas (these get sent in as vectors) one less than the levels as first level is absorbed into intercept
+  alphaeducation = rep(2,lunique(dqlong_clipped$education.level)-1),
+  alphadiet = rep(2,lunique(dqlong_clipped$diet)-1),
+  alphaexpertise = rep(2,lunique(dqlong_clipped$expertise)-1),
+  
+  #
+  n = nrow(dqlong_clipped)
+)
+
+orderpredmod = "
+data{
+  int<lower=0> n;
+  int<lower=0,upper=1> y[n];
+  
+  // continuous
+  vector[n] age;
+  
+  // categorial
+  vector[n] gender;
+  
+  // ordered predictors
+  int education[n];
+  int diet[n];
+  int expertise[n];
+  
+  vector[3] alphaeducation;
+  vector[4] alphadiet;
+  vector[2] alphaexpertise;
+}
+
+parameters{
+  real intercept;
+  real betaage;
+  real betagender;
+  real betaeducation;
+  real betadiet;
+  real betaexpertise;
+  
+  //
+  simplex[3] deltaeducation;
+  simplex[4] deltadiet;
+  simplex[2] deltaexpertise;
+}
+
+transformed parameters {
+ vector[n] logitmu;
+ vector[4] deltaeducation_j;
+ vector[5] deltadiet_j;
+ vector[3] deltaexpertise_j;
+ 
+ deltaeducation_j = append_row(0,deltaeducation);
+ deltadiet_j = append_row(0,deltadiet);
+ deltaexpertise_j = append_row(0,deltaexpertise);
+
+ for(i in 1:n) {
+  logitmu[i] = intercept + betaage * age[i] +  betagender * gender[i] + betaeducation * sum(deltaeducation_j[1:education[i]]) +  betadiet * sum(deltadiet_j[1:diet[i]]) + betaexpertise * sum(deltaexpertise_j[1:expertise[i]]) ;
+ }
+
+}
+
+model {
+ intercept ~ normal(0,1.6);
+ betaage ~ normal(0,1.6);
+ betagender ~ normal(0,1.6);
+ betaeducation ~ normal(0,1.6);
+ betadiet ~ normal(0,1.6);
+ betaexpertise ~ normal(0,1.6);
+ 
+ deltaeducation ~ dirichlet(alphaeducation);
+ deltadiet ~ dirichlet(alphadiet);
+ deltaexpertise ~ dirichlet(alphaexpertise);
+ 
+ for(i in 1:n) y[i] ~  bernoulli_logit(logitmu[i]);
+
+}
+
+generated quantities{
+  vector[n] log_lik;
+  vector[n] scores;
+
+  for(j in 1:n) {
+      log_lik[j] = bernoulli_logit_lpmf(y[j]| logitmu[j]);
+      scores[j] = bernoulli_logit_rng(logitmu[j]);
+  }
+
+}
+
+
+"
+
+ordermod=rstan::stan(model_code =orderpredmod,
+                     data=datalistop,
+                     iter = 2000,
+                     warmup = 1000,
+                     chains=4,
+                     cores=4,
+                     seed = 1234,
+                     control = list(adapt_delta = 0.95))
+traceplot(ordermod)
+```
+
+##Visualise Model 1
+
+```{r visualise_model_1, fig.width=10, fig.height=5, error = F, message = F, warning = F}
+# extract samples
+ordermodsamples = extract(ordermod)
+
+# pp check
+(pcheck1=ppc_stat(datalistop$y,ordermodsamples$scores))
+ggsave("../Figures/Diagnostics/pcheckmod1.png",pcheck1,dpi=300,width=10,height=5)
+
+# basic predictive stats
+maj = function(x,cut=0.5) ifelse((sum(x) / length(x)) >= cut,1,0)
+confmat=table(Pred=apply(ordermodsamples$scores,2,maj),Ob=datalistop$y)
+sum(diag(confmat))/sum(confmat) # accuracy
+confmat[4] / sum(confmat[2,]) # precision
+confmat[1]/ sum(confmat[,1]) # specificity
+
+# get table
+sumtabordermod = summary(ordermod)$summary
+write.table("../Tables/Model1Output.txt")
+
+# flipped for plot
+sumtabordermod = as.data.frame(summary(ordermod, probs = c(0.025, 0.1, 0.25, 0.50, 0.75, 0.9,0.975))$summary)[c(2:6),]
+sumtabordermod$names = c("Age", "Gender", "Education", "Diet", "Expertise")
+sumtabordermod$col = c("Sig", "Sig", "Sig", "Sig", "NSig")
+
+col_pal = "#218f91"
+
+# Forest plots
+Fig2a = ggplot(data = sumtabordermod[which(sumtabordermod$names == "Age"),]) +
+  geom_linerange(aes(xmin = `2.5%`, xmax = `97.5%`, y = names), linewidth = 3, alpha = 0.4, colour = col_pal) +
+  geom_linerange(aes(xmin = `10%`, xmax = `90%`, y = names), linewidth = 3, alpha = 0.6, colour = col_pal) +
+  geom_linerange(aes(xmin = `25%`, xmax = `75%`, y = names), linewidth = 3, alpha = 0.8, colour = col_pal) +
+  geom_point(aes(x = `50%`, y = names), size = 4, colour = "black") +
+  geom_vline(aes(xintercept = 0), linetype = "dashed") +
+  geom_text(aes(x = c(-0.03), y = c(1.3), label = c("Rejection unlikely"))) +
+  geom_text(aes(x = c(0.03), y = c(1.3), label = c("Rejection likely"))) +
+  coord_cartesian(xlim = c(-0.05, 0.05)) +
+  theme_classic() +
+  labs(x = "", y = "")
+
+Fig2b = ggplot(data = sumtabordermod[which(sumtabordermod$names != "Age"),]) +
+  geom_linerange(aes(xmin = `2.5%`, xmax = `97.5%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.4) +
+  geom_linerange(aes(xmin = `10%`, xmax = `90%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.6) +
+  geom_linerange(aes(xmin = `25%`, xmax = `75%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.8) +
+  geom_point(aes(x = `50%`, y = names), size = 4, colour = "black") +
+  geom_vline(aes(xintercept = 0), linetype = "dashed") +
+  coord_cartesian(xlim = c(-3, 3)) +
+  scale_colour_manual(values = c("grey20", col_pal), guide = "none") +
+  theme_classic() +
+  labs(x = expression(beta), y = "")
+
+# sort for plot on response scale 
+ordermodsampleswide=data.frame(do.call(cbind,ordermodsamples))
+names(ordermodsampleswide)
+names(ordermodsampleswide) = c(names(ordermodsampleswide)[1:6],"deltaeducation1","deltaeducation2","deltaeducation3","deltadiet1",
+                               "deltadiet2","deltadiet3","deltadiet4","deltaexpertise1","deltaexpertise2")
+ordermodsampleswide=ordermodsampleswide[,1:15]
+
+# starting dataset
+datalistopwide = data.frame(do.call(cbind,datalistop))
+datalistopwide = datalistopwide[,2:6]
+
+# design is based around using apply on the parameter set above and different matching length datasets (e.g. fixing all but one for marginal effects)
+# the table of parameter draws goes in along with a single row of data - and the result for each parameter set comes out
+inv_logit = function (x) { # from rethinking
+  p = 1/(1 + exp(-x))
+  p = ifelse(x == Inf, 1, p)
+  p
+}
+
+runmodel = function(parameters, data){
+   # params
+  intercept = parameters[1]
+  betaage = parameters[2]
+  betagender = parameters[3]
+  betaeducation = parameters[4]
+  betadiet = parameters[5]
+  betaexpertise = parameters[6]
+  
+  deltaeducation0 = 0
+  deltaeducation1 = parameters[7] 
+  deltaeducation2 = parameters[8] 
+  deltaeducation3 = parameters[9]
+  educationdeltas = c(deltaeducation0,deltaeducation1,deltaeducation2,deltaeducation3)
+  
+  deltadiet0 = 0
+  deltadiet1 = parameters[10] 
+  deltadiet2 = parameters[11] 
+  deltadiet3 = parameters[12]
+  deltadiet4 = parameters[13]
+  dietdeltas = c(deltadiet0,deltadiet1,deltadiet2,deltadiet3,deltadiet4)
+  
+  deltaexpertise0 = 0
+  deltaexpertise1 = parameters[14] 
+  deltaexpertise2 = parameters[15] 
+  expertisedeltas = c(deltaexpertise0,deltaexpertise1,deltaexpertise2)
+  
+  # 
+  age = data[1] 
+  gender = data[2] # coming in binary with 0 female
+  education = data[3] # this coming in as numeric values 1 to N education levels
+  diet = data[4]
+  expertise =  data[5]
+  
+  
+  mu = intercept + betaage * age + betagender * gender + betaeducation * sum(educationdeltas[1:education]) +
+    betadiet * sum(dietdeltas[1:diet]) +  betaexpertise * sum(expertisedeltas[1:expertise])
+  
+  return(inv_logit(mu)) # probabilty of being a dogmatic
+  
+}
+
+# this function runs the previous function for multiple rows of data
+# and then gives mean and credible interval for each datarow given parameter uncertainty
+runmodelanddata = function(parameters,data){
+ 
+ out = data.frame(matrix(NA,ncol=7,nrow=nrow(data)))
+ for(i in 1:nrow(data)) {
+  mus = apply(parameters,1,runmodel,data=as.numeric(data[i,]))
+  meanmus = mean(mus)
+  lci1=quantile(mus,p=0.025)
+  lci2=quantile(mus,p=0.1)
+  lci3=quantile(mus,p=0.25)
+  uci3=quantile(mus,p=0.75)
+  uci2=quantile(mus,p=0.9)
+  uci1=quantile(mus,p=0.975)
+  out[i,] = c(meanmus,lci1,lci2, lci3, uci3, uci2, uci1)
+ }
+ 
+ names(out) = c("mean","lci1","lci2", "lci3", "uci3", "uci2", "uci1")
+ out
+}
+
+# quick test
+testout = runmodelanddata(ordermodsampleswide,datalistopwide)
+plot(datalistopwide$age,testout$mean)
+plot(datalistopwide$gender,testout$mean)
+plot(datalistopwide$education,testout$mean)
+plot(datalistopwide$diet,testout$mean)
+
+# now we need to generate dataframes of the marginal effects - have to be a bit careful because 
+# I think responses will be non-linearly dependent on the values of the other variables, but median age
+# and most common category seems sensible
+median(datalistopwide$age) ; range(datalistopwide$age)
+table(datalistopwide$gender)
+table(datalistopwide$education)
+table(datalistopwide$diet)
+table(datalistopwide$expertise)
+
+# Age
+agemarginal = data.frame(age=18:88,
+                         gender=1,
+                         education=2,
+                         diet=4,
+                         expertise=1)
+
+ageout = runmodelanddata(ordermodsampleswide,agemarginal)
+
+Fig2c = cbind.data.frame(agemarginal,ageout) %>%
+  ggplot(aes(age,mean))+
+  geom_ribbon(aes(ymin=lci3,ymax=uci3), fill = col_pal, alpha = 0.8)+
+  geom_ribbon(aes(ymin=lci2,ymax=uci2), fill = col_pal, alpha = 0.6)+
+  geom_ribbon(aes(ymin=lci1,ymax=uci1), fill = col_pal, alpha = 0.4)+
+  geom_line(lwd=2)  +
+  theme_classic()+  
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea),
+        plot.title = element_text(size = text_sizea))+
+  labs(x = "Age", y = "Probability of rejection", title = "Age") 
+
+# Gender
+gendermarginal = data.frame(age=39,
+                         gender=c(0,1),
+                         education=2,
+                         diet=4,
+                         expertise=1)
+
+genderout = runmodelanddata(ordermodsampleswide,gendermarginal)
+
+Fig2d = cbind.data.frame(gendermarginal,genderout) %>%
+  ggplot(aes(as.factor(gender),mean))+
+  geom_linerange(aes(ymin=lci3,ymax=uci3), colour = col_pal, alpha = 0.8, size = 3)+
+  geom_linerange(aes(ymin=lci2,ymax=uci2), colour = col_pal, alpha = 0.6, size = 3)+
+  geom_linerange(aes(ymin=lci1,ymax=uci1), colour = col_pal, alpha = 0.4, size = 3)+
+  geom_point(size=4)  +
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea),
+        plot.title = element_text(size = text_sizea))+
+  labs(x = "", y = "Probability of rejection", title = "Gender")+
+  ylab("Probability of rejection")+
+  scale_x_discrete(breaks=c("0","1"),labels=c("Female","Male"))
+
+# Education
+educationmarginal = data.frame(age=39,
+                            gender=1,
+                            education=1:4,
+                            diet=4,
+                            expertise=1)
+
+educationout = runmodelanddata(ordermodsampleswide,educationmarginal)
+
+Fig2e = cbind.data.frame(educationmarginal,educationout) %>%
+  ggplot(aes(as.factor(education),mean))+
+  geom_linerange(aes(ymin=lci3,ymax=uci3), colour = col_pal, alpha = 0.8, size = 3)+
+  geom_linerange(aes(ymin=lci2,ymax=uci2), colour = col_pal, alpha = 0.6, size = 3)+
+  geom_linerange(aes(ymin=lci1,ymax=uci1), colour = col_pal, alpha = 0.4, size = 3)+
+  geom_point(size=4)  +
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea),
+        plot.title = element_text(size = text_sizea))+
+  labs(x = "", y = "Probability of rejection", title = "Education")+
+  scale_x_discrete(breaks=c("1","2","3","4"),labels=c("Highschool","Bachelors","Masters","Doctorate"), guide = guide_axis(n.dodge=2))
+
+# Diet
+dietmarginal = data.frame(age=39,
+                               gender=1,
+                               education=2,
+                               diet=1:5,
+                               expertise=1)
+
+dietout = runmodelanddata(ordermodsampleswide,dietmarginal)
+
+Fig2f = cbind.data.frame(dietmarginal,dietout) %>%
+  ggplot(aes(as.factor(diet),mean))+
+  geom_linerange(aes(ymin=lci3,ymax=uci3), colour = col_pal, alpha = 0.8, size = 3)+
+  geom_linerange(aes(ymin=lci2,ymax=uci2), colour = col_pal, alpha = 0.6, size = 3)+
+  geom_linerange(aes(ymin=lci1,ymax=uci1), colour = col_pal, alpha = 0.4, size = 3)+
+  geom_point(size=4)  +
+  theme_classic()+  
+  theme(axis.text.x = element_text(size = text_sizea), axis.title.x = element_text(size = text_sizea),
+        axis.text.y = element_text(size = text_sizea), axis.title.y = element_text(size = text_sizea), 
+        plot.title = element_text(size = text_sizea))+
+  labs(x = "", y = "Probability of rejection", title = "Diet")+
+  scale_x_discrete(breaks=c("1","2","3","4","5"),labels=c("Vegan","Vegetarian","Pescatarian","Omnivore","Carnivore"), guide = guide_axis(n.dodge=2))
+
+
+Fig2 = ggarrange(
+  ggarrange(Fig2a, Fig2b, heights = c(0.4,1), ncol = 1, nrow = 2, align = "hv", labels = c("A", "B")),
+  ggarrange(Fig2c, Fig2d, Fig2e, Fig2f, ncol = 2, nrow = 2, labels = c("C","D","E","F")),
+  ncol = 2, widths = c(1,1.5), align = "hv"
+)
+Fig2
+ggsave("../Figures/Fig2.png",Fig2,dpi=300,width=10,height=5)
+
+```
+
+##Model 2: Acceptability
+
+
+```{r model_2_construct, error = F, message = F, warning = F}
+spltqlong = split(qlong,qlong$clus)
+include = spltqlong$`0`
+exclude= spltqlong$`1`
+
+# beta correction function
+betacorrect = function(x) {
+  o = if(x / 100 ==0) {
+    0.001
+  } else if  (x / 100 ==1){
+    0.999
+  } else {
+    x /100
+  }
+  o
+}
+
+# probably good as supplementary to include everyone - show not arbitrarily splitting the data
+# everyone 
+datalistall = list(
+  accep = sapply(qlong$accepscore,betacorrect) ,
+  nparticipants = lunique(qlong$Response.ID),
+  person = factnum(qlong$Response.ID),
+  conservation = qlong$conservpick, 
+  localcomm = qlong$localcommpick,
+  land = qlong$landpick, 
+  weapon = qlong$weaponpick, 
+  picture = qlong$afterpick, 
+  location = factnum(qlong$hunthunter), 
+  locationcorrector = ifelse(factnum(qlong$hunthunter)==1,0,1), 
+  charisma = qlong$lgcharismascore,
+  n = nrow(qlong)
+)
+
+# only those pragmatic
+datalistinclude = list(
+  accep = sapply(include$accepscore,betacorrect) ,
+  nparticipants = lunique(include$Response.ID),
+  person = factnum(include$Response.ID),
+  conservation = include$conservpick, 
+  localcomm = include$localcommpick,
+  land = include$landpick, 
+  weapon = include$weaponpick, 
+  picture = include$afterpick, 
+  location = ifelse(factnum(include$hunthunter) == 2 | factnum(include$hunthunter) == 3, 1, 0), 
+  locationcorrector = ifelse(factnum(include$hunthunter)==1,0,1), 
+  charisma = include$lgcharismascore,
+  n = nrow(include)
+)
+
+
+# remember phi here is precision the reciprocal of the variance 
+multilevelcovar="
+  data {
+    int<lower=0> n;
+    int<lower=0> nparticipants;
+    int person[n];
+    
+    vector[n] accep;
+ 
+    int conservation[n];
+    int localcomm[n];
+    int land[n];
+    int weapon[n];
+    int picture[n];
+    int location[n];
+    int locationcorrector[n];
+    vector[n] charisma;
+  }
+  
+  parameters{
+    real betaconservation;
+    real betalocal;
+    real betaland;
+    real betaweapon;
+    real betapicture;
+    real betalocation;
+    real betacharisma;
+    
+    // hierarchical parameters capturing the covariance of
+    // mean and precision of the beta 
+    real a_bar;
+    real<lower=0> b_bar;
+    vector<lower=0>[2] sigma_id;
+    
+    corr_matrix[2] Rho;
+    
+    vector[nparticipants] id_a;
+    vector<lower=0>[nparticipants] id_b;
+  
+  }
+  
+  transformed parameters {
+    vector[n] lmu;
+    vector<lower=0>[n] phi;
+    
+    for(i in 1:n){
+      lmu[i]  = inv_logit(id_a[person[i]] + betaconservation * conservation[i] + betalocal* localcomm [i] + betaland * land[i] + betaweapon * weapon[i] + betapicture * picture[i] + betalocation * location[i] + betacharisma * charisma[i]  );
+      phi[i] =  id_b[person[i]]; // we would put a log link here if we want to model stuff and we'd drop the lower=0 on id_b 
+    }
+  
+  }
+  
+  model{
+  
+    betaconservation ~ normal(0,1.5);
+    betalocal ~ normal(0,1.5);
+    betaland ~ normal(0,1.5);
+    betaweapon ~ normal(0,1.5);
+    betapicture ~ normal(0,1.5);
+    betalocation ~ normal(0,1.5);
+  
+    
+    a_bar ~ normal(0,1.5);
+    b_bar ~ exponential(1);
+    sigma_id ~ exponential(1);
+    
+    vector[2] idoff[nparticipants];
+    vector[2] MU;
+    MU = [a_bar, b_bar]';
+    Rho ~ lkj_corr(2);
+    
+    for(j in 1:nparticipants) {
+        idoff[j] = [id_a[j], id_b[j]]';
+      }
+    idoff ~ multi_normal(MU, quad_form_diag(Rho, sigma_id));
+    
+    for(i in 1:n){
+      target += beta_proportion_lpdf(accep[i]| lmu[i] , phi[i]);
+    }
+  
+  
+  }
+  
+  generated quantities {
+  vector[n] log_lik;
+  vector[n] scores;
+  vector[n] resids;
+  for(j in 1:n) {
+    log_lik[j] = beta_proportion_lpdf(accep[j]| lmu[j] , phi[j]);
+    scores[j] = beta_proportion_rng(lmu[j] , phi[j]);
+    resids[j] = accep[j] - beta_proportion_rng(lmu[j] , phi[j]);
+  }
+  }
+
+
+"
+# run models
+alldatamod=rstan::stan(model_code =multilevelcovar,
+               data=datalistall,
+               iter = 2000,
+               warmup = 1000,
+               chains=4,
+               cores=4,
+               seed = 1234,
+               control = list(adapt_delta = 0.95))
+traceplot(alldatamod)
+
+includedatamod=rstan::stan(model_code =multilevelcovar,
+                        data=datalistinclude,
+                        iter = 2000,
+                        warmup = 1000,
+                        chains=4,
+                        cores=4,
+                        seed = 1234,
+                        control = list(adapt_delta = 0.95))
+traceplot(includedatamod)
+```
+
+##Visualise Model 2
+
+```{r visualise_model_2, error = F, message = F, warning = F}
+# pp check
+alldatascores = extract(alldatamod,pars=c("scores"))
+includescores = extract(includedatamod,pars=c("scores"))
+
+(pcheck2=ppc_stat(datalistall$accep,alldatascores$scores))
+(pcheck3=ppc_stat(datalistall$accep,alldatascores$scores,stat="sd"))
+
+ggsave("../Figures/Diagnostics/pcheckmod2.png",pcheck2,dpi=300,width=10,height=5)
+ggsave("../Figures/Diagnostics/pcheckmod3.png",pcheck3,dpi=300,width=10,height=5)
+
+(pcheck4=ppc_stat(datalistinclude$accep,includescores$scores))
+(pcheck5=ppc_stat(datalistinclude$accep,includescores$scores,stat="sd"))
+
+ggsave("../Figures/Diagnostics/pcheckmod4.png",pcheck4,dpi=300,width=10,height=5)
+ggsave("../Figures/Diagnostics/pcheckmod5.png",pcheck5,dpi=300,width=10,height=5)
+
+
+# Tables to save
+alldatasum = summary(alldatamod)$summary 
+includesum = summary(includedatamod)$summary 
+
+write.table(alldatasum,"../Tables/Model2AllOutput.txt")
+write.table(includesum,"../Tables/Model2IncludeOutput.txt")
+# flipped for plot
+sumincludedatamod= as.data.frame(summary(includedatamod, probs = c(0.025, 0.1, 0.25, 0.50, 0.75, 0.9,0.975))$summary)[c(1:7),]
+sumincludedatamod$names = c("Hunt has no impact on species local conservation status", "Hunt revenue is shared with the local community", "Hunt revenue supports wildlife habitat protection" , "Hunter uses a rifle, not a bow", "Hunter poses for a photo with the animal", "Hunter hunts outside of their region i.e. modern colonialism", "Species charisma")
+sumincludedatamod$col = c("Sig", "Sig", "Sig", "Sig", "Sig", "Sig", "NSig")
+
+col_pal = "#218f91"
+
+# Forest plots
+Fig3a = ggplot(data = sumincludedatamod[which(sumincludedatamod$names == "Species charisma"),]) +
+  geom_linerange(aes(xmin = `2.5%`, xmax = `97.5%`, y = names), linewidth = 3, alpha = 0.4, colour = "grey20") +
+  geom_linerange(aes(xmin = `10%`, xmax = `90%`, y = names), linewidth = 3, alpha = 0.6, colour =  "grey20") +
+  geom_linerange(aes(xmin = `25%`, xmax = `75%`, y = names), linewidth = 3, alpha = 0.8, colour =  "grey20") +
+  geom_point(aes(x = `50%`, y = names), size = 4, colour = "black") +
+  geom_vline(aes(xintercept = 0), linetype = "dashed") +
+  coord_cartesian(xlim = c(-0.2, 0.2)) +
+  theme_classic() +
+  labs(x = "", y = "")
+
+Fig3b = ggplot(data = sumincludedatamod[which(sumincludedatamod$names != "Species charisma"),]) +
+  geom_linerange(aes(xmin = `2.5%`, xmax = `97.5%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.4) +
+  geom_linerange(aes(xmin = `10%`, xmax = `90%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.6) +
+  geom_linerange(aes(xmin = `25%`, xmax = `75%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.8) +
+  geom_point(aes(x = `50%`, y = names), size = 4, colour = "black") +
+  geom_vline(aes(xintercept = 0), linetype = "dashed") +
+  coord_cartesian(xlim = c(-1.2, 1.2)) +
+  scale_colour_manual(values = c(col_pal), guide = "none") +
+  geom_text(aes(x = c(-1), y = c("Hunter hunts outside of their region i.e. modern colonialism"), label = c("Less acceptable"))) +
+  geom_text(aes(x = c(1), y = c("Hunter hunts outside of their region i.e. modern colonialism"), label = c("More acceptable"))) +
+  theme_classic() +
+  labs(x = expression(beta), y = "")
+
+Fig3 = ggarrange(Fig3a, Fig3b, ncol = 1, nrow = 2, heights = c(0.3, 1), align = "hv", labels = c("A", "B"))
+Fig3
+ggsave("../Figures/Fig3.png",Fig3,dpi=300,width=10,height=5)
+
+t.test(log(duration) ~ clus, data = dqlong[which(dqlong$duration < 10000),])
+exp(5.77)
+exp(5.35)
+```
+
+##Session info
+
+```{r session_info, error = F, message = F, warning = F}
+sessionInfo()
+```
