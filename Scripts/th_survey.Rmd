@@ -60,6 +60,10 @@ filter(scoretab,range==0) %>% ggplot(aes(score)) +
 qlong=left_join(qlong,scoretab,by="responseid") %>% 
   mutate(clus = ifelse(range==0 & score==0,1,0))
 
+range_tst = qlong %>%
+  group_by(Response.ID) %>%
+  summarise(range_mean = mean(range))
+
 # change some qlong names which are unwieldy
 names(qlong)[c(20,31,32,33,34,35,36,37)] = c("duration","age","gender","education.level","country.mosttime","diet","would.hunt","expertise")
 
@@ -735,16 +739,67 @@ multilevelcovar="
   
   }
   
-  generated quantities {
+generated quantities {
+  //----------------------------------------------------------
+  //  a) posterior predictive quantities already in your code
+  //----------------------------------------------------------
   vector[n] log_lik;
   vector[n] scores;
-  vector[n] resids;
-  for(j in 1:n) {
-    log_lik[j] = beta_proportion_lpdf(accep[j]| lmu[j] , phi[j]);
-    scores[j] = beta_proportion_rng(lmu[j] , phi[j]);
-    resids[j] = accep[j] - beta_proportion_rng(lmu[j] , phi[j]);
+  vector[n] resids_cond;      // residuals for conditional R²
+
+  //----------------------------------------------------------
+  //  b) extra objects needed for Bayesian R²
+  //----------------------------------------------------------
+  vector[n] mu_cond;          // fitted means WITH random effects
+  vector[n] mu_marg;          // fitted means WITHOUT random effects
+  real      R2_cond;          // conditional R²
+  real      R2_marg;          // marginal R²
+
+  //---------------------------
+  // build fitted values, etc.
+  //---------------------------
+  for (i in 1:n) {
+
+    // ----- fitted means -----
+    mu_cond[i] = lmu[i];                                        // uses id_a[*]
+    mu_marg[i] = inv_logit(
+                    a_bar                                              // population-level intercept
+                  + betaconservation * conservation[i]
+                  + betalocal       * localcomm[i]
+                  + betaland        * land[i]
+                  + betaweapon      * weapon[i]
+                  + betapicture     * picture[i]
+                  + betalocation    * location[i]
+                  + betacharisma    * charisma[i]
+                 );                                           // *no* id_a here
+
+    // ----- quantities you were already saving -----
+    log_lik[i]  = beta_proportion_lpdf(accep[i] | lmu[i], phi[i]);
+    scores[i]   = beta_proportion_rng(lmu[i],   phi[i]);
+    resids_cond[i] = accep[i] - scores[i];      // conditional residuals
   }
+
+  //----------------------------------------------------------
+  // c) compute variance components and R²
+  //----------------------------------------------------------
+  {
+    // helper function variance() is available in Stan ≥2.26
+    real var_pred;
+    real var_resid;
+
+    // ---- conditional R² -----------------------------------
+    var_pred  = variance(mu_cond);
+    var_resid = variance(to_vector(accep) - mu_cond);
+    R2_cond   = var_pred / (var_pred + var_resid);
+
+    // ---- marginal R² --------------------------------------
+    var_pred  = variance(mu_marg);
+    var_resid = variance(to_vector(accep) - mu_marg);
+    R2_marg   = var_pred / (var_pred + var_resid);
   }
+}
+
+
 
 
 "
@@ -759,6 +814,8 @@ alldatamod=rstan::stan(model_code =multilevelcovar,
                control = list(adapt_delta = 0.95))
 traceplot(alldatamod)
 
+print(alldatamod, pars = c("R2_marg", "R2_cond"), probs = c(0.025, 0.5, 0.975))
+
 includedatamod=rstan::stan(model_code =multilevelcovar,
                         data=datalistinclude,
                         iter = 2000,
@@ -768,6 +825,8 @@ includedatamod=rstan::stan(model_code =multilevelcovar,
                         seed = 1234,
                         control = list(adapt_delta = 0.95))
 traceplot(includedatamod)
+
+print(includedatamod, pars = c("R2_marg", "R2_cond"), probs = c(0.025, 0.5, 0.975))
 ```
 
 ##Visualise Model 2
