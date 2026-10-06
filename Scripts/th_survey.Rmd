@@ -1,7 +1,7 @@
 ---
 title: "Analytical pipeline for 'Conservation impacts and socio-demographic characteristics mediate perceptions of trophy hunting'"
-author: "Johnson T.F."
-date: "2025-05-09"
+author: "Johnson T.F. & Evans L. C."
+date: "2026-10-06"
 output: html_document
 ---
 
@@ -894,6 +894,91 @@ t.test(log(duration) ~ clus, data = dqlong[which(dqlong$duration < 10000),])
 exp(5.77)
 exp(5.35)
 ```
+
+
+### Add additional robustness check 
+```{r}
+
+unique(qlong$diet)
+dietqlong <- filter(qlong, !diet %in% c("Vegan (No meat, fish, or dairy)","Vegetarian (No meat or fish)"))
+
+datalistdiet = list(
+  accep = sapply(dietqlong$accepscore,betacorrect) ,
+  nparticipants = lunique(dietqlong$Response.ID),
+  person = factnum(dietqlong$Response.ID),
+  conservation = dietqlong$conservpick, 
+  localcomm = dietqlong$localcommpick,
+  land = dietqlong$landpick, 
+  weapon = dietqlong$weaponpick, 
+  picture = dietqlong$afterpick, 
+  location = factnum(dietqlong$hunthunter), 
+  locationcorrector = ifelse(factnum(dietqlong$hunthunter)==1,0,1), 
+  charisma = dietqlong$lgcharismascore,
+  n = nrow(dietqlong)
+)
+
+dietmod=rstan::stan(model_code =multilevelcovar,
+                        data=datalistdiet,
+                        iter = 2000,
+                        warmup = 1000,
+                        chains=4,
+                        cores=4,
+                        seed = 1234,
+                        control = list(adapt_delta = 0.95))
+traceplot(dietmod)
+print(dietmod, pars = c("R2_marg", "R2_cond"), probs = c(0.025, 0.5, 0.975))
+dietmodscores = extract(dietmod,pars=c("scores"))
+
+
+(pcheck6=ppc_stat(datalistdiet$accep,dietmodscores$scores))
+(pcheck7=ppc_stat(datalistdiet$accep,dietmodscores$scores,stat="sd"))
+
+ggsave("../Figures/Diagnostics/pcheckmod6.png",pcheck6,dpi=300,width=10,height=5)
+ggsave("../Figures/Diagnostics/pcheckmod7.png",pcheck7,dpi=300,width=10,height=5)
+
+# Tables to save
+dietsum = summary(dietmod)$summary 
+write.table(dietsum,"../Tables/Model2DietOutput.txt")
+
+# Forest plots
+sumdietmod= as.data.frame(summary(dietmod, probs = c(0.025, 0.1, 0.25, 0.50, 0.75, 0.9,0.975))$summary)[c(1:7),]
+sumdietmod$names = c("Hunt has no impact on species local conservation status", "Hunt revenue is shared with the local community", "Hunt revenue supports wildlife habitat protection" , "Hunter uses a rifle, not a bow", "Hunter poses for a photo with the animal", "Hunter hunts outside of their region i.e. modern colonialism", "Species charisma")
+sumdietmod$col = c("Sig", "NSig", "Sig", "Sig", "NSig", "NSig", "NSig")
+
+col_pal = c("grey20","#218f91")
+
+Fig4Sa = ggplot(data = sumdietmod[which(sumdietmod$names == "Species charisma"),]) +
+  geom_linerange(aes(xmin = `2.5%`, xmax = `97.5%`, y = names), linewidth = 3, alpha = 0.4, colour = "grey20") +
+  geom_linerange(aes(xmin = `10%`, xmax = `90%`, y = names), linewidth = 3, alpha = 0.6, colour =  "grey20") +
+  geom_linerange(aes(xmin = `25%`, xmax = `75%`, y = names), linewidth = 3, alpha = 0.8, colour =  "grey20") +
+  geom_point(aes(x = `50%`, y = names), size = 4, colour = "black") +
+  geom_vline(aes(xintercept = 0), linetype = "dashed") +
+  coord_cartesian(xlim = c(-0.2, 0.2)) +
+  theme_classic() +
+  labs(x = "", y = "")
+
+Fig4Sb = ggplot(data = sumdietmod[which(sumdietmod$names != "Species charisma"),]) +
+  geom_linerange(aes(xmin = `2.5%`, xmax = `97.5%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.4) +
+  geom_linerange(aes(xmin = `10%`, xmax = `90%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.6) +
+  geom_linerange(aes(xmin = `25%`, xmax = `75%`, y = reorder(names, -`50%`), colour = col), linewidth = 3, alpha = 0.8) +
+  geom_point(aes(x = `50%`, y = names), size = 4, colour = "black") +
+  geom_vline(aes(xintercept = 0), linetype = "dashed") +
+  coord_cartesian(xlim = c(-1.2, 1.2)) +
+  scale_colour_manual(values = c(col_pal), guide = "none") +
+  geom_text(aes(x = c(-1), y = c("Hunter hunts outside of their region i.e. modern colonialism"), label = c("Less acceptable"))) +
+  geom_text(aes(x = c(1), y = c("Hunter hunts outside of their region i.e. modern colonialism"), label = c("More acceptable"))) +
+  theme_classic() +
+  labs(x = expression(beta), y = "")
+
+
+Fig4S = ggarrange(Fig4Sa, Fig4Sb, ncol = 1, nrow = 2, heights = c(0.3, 1), align = "hv", labels = c("A", "B"))
+Fig4S
+ggsave("../Figures/Fig4s.png",Fig4S,dpi=300,width=10,height=5)
+
+```
+
+
+
 
 ##Session info
 
